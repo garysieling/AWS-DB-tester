@@ -1,0 +1,278 @@
+@section SPAViews {
+   
+}
+@section Scripts{
+  @Scripts.Render("~/bundles/knockout")
+  @Scripts.Render("~/bundles/app")
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js"></script>
+
+  <script lang="text/javascript">
+    var iterationResults = [];
+    var requestedIterations = 0;
+    
+    function renderChart(jsonData) {          
+      if (requestedIterations > 0) {
+        _.each(jsonData,
+          row => { 
+            iterationResults.push(row); 
+          }
+        );
+        
+        requestedIterations--;
+        iteration();
+
+        return;
+      }
+
+      var idx = 1;
+      _.each(iterationResults,
+        row => {
+          row.runId = idx;
+
+          if (row.db === 'db2') {
+            idx++;
+          }
+        }
+      );
+
+      var jsonData = iterationResults;
+
+      $('#results').html(JSON.stringify(jsonData, null, 2));
+                    
+      var data = 
+        _(jsonData).groupBy( 
+          row => row.db + "_" + row.queryIndex 
+        ).map(
+          group => 
+          {
+            var total = 
+              _.reduce(group, 
+                function(total, row) {
+                  return total + row.timing
+                },
+                0.0
+              );
+
+            var n = group.length;
+            var avg = 1.0 * total / n;
+
+            var sumsqr = 
+              _.reduce(group, 
+                function(total, row) {
+                  return total + Math.pow(avg - row.timing, 2);
+                },
+                0.0
+              );
+
+            // https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+            var variance = sumsqr / (n - 1)
+
+            var dev = Math.pow(variance, 0.5);
+
+            return _.each(group,
+              row => {
+                row.avg = avg;
+                row.maxdev = avg + 2 * dev;
+                row.mindev = avg - 2 * dev;
+              }        
+            );                
+          }
+        ).value();
+
+      var margin = {top: 20, right: 80, bottom: 30, left: 50},
+          width = 960 - margin.left - margin.right,
+          height = 500 - margin.top - margin.bottom;
+
+      var parseDate = d3.time.format("%Y%m%d").parse;
+
+      var x = d3.scale.linear()
+          .range([0, width]);
+
+      var y = d3.scale.linear()
+          .range([height, 0]);
+
+      var color = d3.scale.category10();
+
+      var xAxis = d3.svg.axis()
+          .scale(x)
+          .orient("bottom");
+
+      var yAxis = d3.svg.axis()
+          .scale(y)
+          .orient("left");
+
+      var line = d3.svg.line()
+          .x(function(d) { return x(d.runId); })
+          .y(function(d) { return y(d.timing); });
+
+      var linemin = d3.svg.line()
+                .x(function(d) { return x(d.runId); })
+                .y(function(d) { return y(d.mindev); });
+
+      var linemax = d3.svg.line()
+                .x(function(d) { return x(d.runId); })
+                .y(function(d) { return y(d.maxdev); });
+    
+      var lineavg = d3.svg.line()
+          .x(function(d) { return x(d.runId); })
+          .y(function(d) { return y(d.avg); });
+
+
+      var svg = d3.select("body").append("svg")
+          .attr("width", width + margin.left + margin.right)
+          .attr("height", height + margin.top + margin.bottom)
+          .append("g")
+          .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      color.domain(_.map( data, (v, k) => { return k }));
+
+      var tests = color.domain().map(function (name) {
+        return {
+          name: name,
+          values: data[name].map(function (d) {
+            return d;
+          })
+        };
+      });
+
+      var allData = 
+        _.reduce(data, 
+          function(arr, next) { 
+            return arr.concat(next) 
+          }, []);
+
+      x.domain(d3.extent(
+        allData,
+        function (d) { return d.runId; }));
+
+      y.domain([
+        d3.min(tests, function (c) { /*return d3.min(c.values, function (v) { return Math.min(v.timing, v.mindev); }); */ return 0; }),
+        d3.max(tests, function (c) { return d3.max(c.values, function (v) { return Math.max(v.timing, v.maxdev); }); })
+      ]);
+
+      svg.append("g")
+          .attr("class", "x axis")
+          .attr("transform", "translate(0," + height + ")")
+          .call(xAxis);
+
+      svg.append("g")
+          .attr("class", "y axis")
+          .call(yAxis)
+          .append("text")
+          .attr("transform", "rotate(-90)")
+          .attr("y", 6)
+          .attr("dy", ".71em")
+          .style("text-anchor", "end")
+          .text("Timing (ms)");
+
+      var test = svg.selectAll(".test")
+          .data(tests)
+          .enter().append("g")
+          .attr("class", "test");
+
+      test.append("path")
+          .attr("class", "line")
+          .attr("d", function (d) { return line(d.values); })
+          .style("stroke", function (d) { return color(d.name); });
+
+      test.append("path")
+            .attr("class", "line")
+            .attr("d", function (d) { return lineavg(d.values); })
+            .style("stroke", function (d) { return color(d.name); });
+
+      test.append("path")
+        .attr("class", "line")
+        .attr("d", function (d) { return linemin(d.values); })
+        .style("stroke", function (d) { return color(d.name); })
+        .style("stroke-dasharray", ("3, 3"));
+
+      test.append("path")
+        .attr("class", "line")
+        .attr("d", function (d) { return linemax(d.values); })
+        .style("stroke", function (d) { return color(d.name); })
+        .style("stroke-dasharray", ("3, 3"));
+
+      test.append("text")
+          .datum(function (d) { return { name: d.name, value: d.values[d.values.length - 1] }; })
+          .attr("transform", function (d) { return "translate(" + x(d.value.runId) + "," + y(d.value.timing) + ")"; })
+          .attr("x", 3)
+          .attr("dy", ".35em")
+          .text(function (d) { return d.name; });
+    }
+
+
+    function iteration() {
+      $.ajax({
+        url: "/Admin/RunTest",
+        data: {
+          iterations: 1,
+          queryText: $('#query').val()
+        },
+        dataType: 'json'
+      }).done(renderChart);
+    }
+
+    $('#test').on('click',
+      function () {
+        requestedIterations = $('#iterations').val();
+        iterationResults = [];
+        iteration();
+      });
+  </script>
+}
+
+@section Styles {
+<style>
+body {
+  font: 10px sans-serif;
+}
+
+.axis path,
+.axis line {
+  fill: none;
+  stroke: #000;
+  shape-rendering: crispEdges;
+}
+
+.x.axis path {
+  display: none;
+}
+
+.line {
+  fill: none;
+  stroke: steelblue;
+  stroke-width: 1.5px;
+}
+
+
+#conn {
+  padding-top: 20px;
+  width: 600px;
+}
+
+#conn p {
+  width: 100%;
+}
+
+#conn p input, #conn p textarea {
+  width: 100%;
+  max-width: 600px;      
+}
+</style>
+}
+
+<div id="conn">
+  <p><input type="text" id="iterations" placeholder="Iterations" value="10"/></p>
+  <p><textarea rows="8" id="query" placeholder="Query">select 1</textarea></p>
+  <p><button id="test">Test</button></p>
+</div>
+
+<div id="results">
+
+</div>
+
+<div id="chart">
+
+</div>
+
